@@ -18,6 +18,20 @@ app.use(express.urlencoded({ extended: true }));
 // Serve frontend static files
 app.use(express.static(path.join(__dirname, 'public')));
 
+// URL normalization for serverless environments (handles both /api/foo and /foo inside /api/index.js)
+app.use((req, res, next) => {
+  if (
+    !req.url.startsWith('/api') &&
+    req.url !== '/' &&
+    !req.url.startsWith('/index.html') &&
+    !req.url.startsWith('/css') &&
+    !req.url.startsWith('/js')
+  ) {
+    req.url = '/api' + (req.url.startsWith('/') ? req.url : '/' + req.url);
+  }
+  next();
+});
+
 // Initialize database tables & seed data
 initDatabase();
 
@@ -1152,11 +1166,43 @@ app.post('/api/import/products', upload.single('file'), (req, res) => {
 });
 
 // Fallback route for SPA
-app.use((req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+app.use((req, res, next) => {
+  // If request is an API route, return 404 JSON instead of HTML
+  if (req.path.startsWith('/api')) {
+    return res.status(404).json({ error: `Endpoint not found: ${req.method} ${req.path}` });
+  }
+  res.sendFile(path.join(__dirname, 'public', 'index.html'), (err) => {
+    if (err && !res.headersSent) {
+      res.status(404).send('Not Found');
+    }
+  });
 });
 
-// Start Express server
-app.listen(PORT, () => {
-  console.log(`FlowStock ERP & Invoicing Server running at http://localhost:${PORT}`);
+// Centralized error-handling middleware for Express 5
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    return res.status(400).json({ error: 'Malformed JSON payload in request body' });
+  }
+  console.error('Unhandled request error:', req.method, req.path, err.message);
+  if (!res.headersSent) {
+    res.status(err.status || 500).json({ error: err.message || 'Internal Server Error' });
+  }
 });
+
+// Process-level safety guards to prevent unexpected termination
+process.on('uncaughtException', (err) => {
+  console.error('Server Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('Server Unhandled Rejection:', reason);
+});
+
+// Export app for Vercel / serverless environments
+module.exports = app;
+
+// Start Express server if run directly (local development)
+if (require.main === module || !process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`FlowStock ERP & Invoicing Server running at http://localhost:${PORT}`);
+  });
+}

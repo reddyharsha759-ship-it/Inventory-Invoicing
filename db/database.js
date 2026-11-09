@@ -1,13 +1,40 @@
-const { DatabaseSync } = require('node:sqlite');
 const path = require('node:path');
+const os = require('node:os');
+const fs = require('node:fs');
 
-const dbPath = path.join(__dirname, '..', 'inventory.db');
-const db = new DatabaseSync(dbPath);
+let DatabaseSync;
+try {
+  DatabaseSync = require('node:sqlite').DatabaseSync;
+} catch (err) {
+  console.error('CRITICAL: node:sqlite module could not be loaded. Ensure Node.js 22.x or newer is configured on Vercel.', err);
+}
 
-// Enable foreign keys and WAL mode for better concurrency and reliability
-db.exec(`
-  PRAGMA foreign_keys = ON;
-`);
+// In Vercel / serverless environments, the filesystem is read-only except /tmp
+const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NOW_REGION);
+const dbPath = isServerless
+  ? path.join(os.tmpdir(), 'inventory.db')
+  : path.join(__dirname, '..', 'inventory.db');
+
+// If a bundled database exists on cold start, copy to writable /tmp
+if (isServerless) {
+  const localDb = path.join(__dirname, '..', 'inventory.db');
+  if (fs.existsSync(localDb) && !fs.existsSync(dbPath)) {
+    try {
+      fs.copyFileSync(localDb, dbPath);
+    } catch (e) {
+      console.warn('Could not copy bundled inventory.db to /tmp, will initialize fresh:', e.message);
+    }
+  }
+}
+
+const db = DatabaseSync ? new DatabaseSync(dbPath) : null;
+
+// Enable foreign keys
+if (db) {
+  db.exec(`
+    PRAGMA foreign_keys = ON;
+  `);
+}
 
 // Initialize Database Tables
 function initDatabase() {
